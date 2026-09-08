@@ -8,18 +8,22 @@ import { useModalA11y } from '../hooks/useModalA11y';
 interface MovieModalProps {
   open: boolean;
   onClose: () => void;
-  onSelect: (movie: Movie) => void;
+  /** Returns false when the save was rejected because another person edited the day first. */
+  onSelect: (movie: Movie) => Promise<boolean> | boolean | void;
+  /** Re-captures the server baseline for the day being edited, offered after a conflict. */
+  onReload?: () => Promise<void> | void;
 }
 
-export default function MovieModal({ open, onClose, onSelect }: MovieModalProps) {
+export default function MovieModal({ open, onClose, onSelect, onReload }: MovieModalProps) {
   const { results, loading, error, search, loadCategory, loadRecs } = useMovies();
   const genres = useGenres();
-  const debounce = useDebouncedSearch(400);
-  const panelRef = useModalA11y(open, onClose);
+  const { debounce, cancel } = useDebouncedSearch(400);
+  const panelRef = useModalA11y(open, onClose, 'input[type=search]');
   const [query, setQuery] = useState('');
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const [activeCat, setActiveCat] = useState<MovieCategory | null>(null);
   const [activeRecsParams, setActiveRecsParams] = useState<Record<string, string> | null>(null);
+  const [selectError, setSelectError] = useState(false);
   const wasSearching = useRef(false);
 
   useEffect(() => {
@@ -29,6 +33,7 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
       setActiveRecsParams(null);
       setActiveLabel(first.label);
       loadCategory(first);
+      setSelectError(false);
     }
   }, [open, loadCategory]);
 
@@ -41,9 +46,16 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
   }, [activeCat, activeRecsParams, loadCategory, loadRecs]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // Drop any pending search scheduled before the modal closed.
+      cancel();
+      return;
+    }
     const q = query.trim();
     if (!q) {
+      // Clearing the input must also cancel a pending debounced search, or the
+      // ghost query would fire and replace the category results.
+      cancel();
       if (wasSearching.current) {
         wasSearching.current = false;
         reloadActive();
@@ -52,11 +64,12 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
     }
     wasSearching.current = true;
     debounce(() => search(q));
-  }, [query, open, debounce, search, reloadActive]);
+  }, [query, open, debounce, cancel, search, reloadActive]);
 
   const handleCategory = (label: string) => {
     const cat = MOVIE_CATEGORIES.find((c) => c.label === label);
     if (!cat) return;
+    setSelectError(false);
     setActiveLabel(label);
     setActiveCat(cat);
     setActiveRecsParams(null);
@@ -64,10 +77,21 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
   };
 
   const handleRecs = (label: string, params: Record<string, string>) => {
+    setSelectError(false);
     setActiveLabel(label);
     setActiveCat(null);
     setActiveRecsParams(params);
     loadRecs(params);
+  };
+
+  const handleSelectClick = async (movie: Movie) => {
+    const ok = await onSelect(movie);
+    if (ok === false) setSelectError(true);
+  };
+
+  const handleReload = async () => {
+    await onReload?.();
+    setSelectError(false);
   };
 
   if (!open) return null;
@@ -79,6 +103,15 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
           <h2>Elegir película</h2>
           <button className="btn btn-ghost" onClick={onClose} aria-label="Cerrar">✕</button>
         </div>
+
+        {selectError && (
+          <div className="banner banner-error">
+            <span>⚠️ Este día fue modificado por otra persona. Tus cambios no se guardaron.</span>
+            <button className="btn btn-ghost" onClick={handleReload}>
+              Recargar y reintentar
+            </button>
+          </div>
+        )}
 
         <input
           className="search-input"
@@ -134,7 +167,7 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
                   </span>
                 </div>
                 <p className="movie-overview">{m.overview?.slice(0, 140)}{(m.overview?.length ?? 0) > 140 ? '…' : ''}</p>
-                <button className="btn btn-primary movie-select" onClick={() => onSelect(m)}>
+                <button className="btn btn-primary movie-select" onClick={() => handleSelectClick(m)}>
                   Seleccionar
                 </button>
               </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CalendarEntry, Persona } from '../types';
 import { posterUrl, backdropUrl } from '../services/tmdb';
 import { useModalA11y } from '../hooks/useModalA11y';
@@ -10,11 +10,19 @@ interface DayDetailModalProps {
   persona: Persona | null;
   onClose: () => void;
   onChangeMovie: () => void;
-  onToggleWatched: (watched: boolean) => void;
-  onSetRating: (persona: Persona, value: number) => void;
-  onSetNotes: (persona: Persona, text: string) => void;
+  onToggleWatched: (watched: boolean) => void | Promise<void>;
+  onSetRating: (persona: Persona, value: number) => void | Promise<void>;
+  /** Returns false when the write was rejected by the conflict guard. */
+  onSetNotes: (persona: Persona, text: string) => boolean | Promise<boolean> | void;
   stale?: boolean;
+  /** Inline conflict message to show (set by the parent after a rejected save). */
+  saveConflict?: string | null;
+  onResolveConflict?: () => void | Promise<void>;
 }
+
+type PersonaKey = 'p1' | 'p2';
+
+const NOTES_FLUSH_DELAY = 600;
 
 export default function DayDetailModal({
   open,
@@ -27,17 +35,118 @@ export default function DayDetailModal({
   onSetRating,
   onSetNotes,
   stale,
+  saveConflict,
+  onResolveConflict,
 }: DayDetailModalProps) {
   const [notesP1, setNotesP1] = useState('');
   const [notesP2, setNotesP2] = useState('');
-  const panelRef = useModalA11y(open, onClose);
 
-  useEffect(() => {
-    if (open) {
-      setNotesP1(entry?.notes_p1 || '');
-      setNotesP2(entry?.notes_p2 || '');
+  // Latest props through refs so debounced/async flushes always use the current
+  // baseline and handlers, never a stale closure from the scheduling render.
+  const onSetNotesRef = useRef(onSetNotes);
+  onSetNotesRef.current = onSetNotes;
+  const notesDraftRef = useRef<Record<PersonaKey, string>>({ p1: '', p2: '' });
+  const flushTimerRef = useRef<Record<PersonaKey, ReturnType<typeof setTimeout> | null>>({
+    p1: null,
+    p2: null,
+  });
+  // Texts whose last flush was rejected by the conflict guard — resent once the
+  // parent resolves the conflict and clears the message.
+  const conflictPendingRef = useRef<Partial<Record<PersonaKey, string>>>({});
+  const prevOpenRef = useRef(false);
+  const prevConflictRef = useRef<string | null | undefined>(null);
+
+  const handleClose = useCallback(() => {
+    // Flush any pending debounced notes before the day closes, so the trailing
+    // edit is not lost.
+    if (flushTimerRef.current.p1) {
+      const t = flushTimerRef.current.p1;
+      flushTimerRef.current.p1 = null;
+      clearTimeout(t);
+      onSetNotesRef.current('p1', notesDraftRef.current.p1);
     }
-  }, [open, entry?.notes_p1, entry?.notes_p2]);
+    if (flushTimerRef.current.p2) {
+      const t = flushTimerRef.current.p2;
+      flushTimerRef.current.p2 = null;
+      clearTimeout(t);
+      onSetNotesRef.current('p2', notesDraftRef.current.p2);
+    }
+    onClose();
+  }, [onClose]);
+
+  const panelRef = useModalA11y(open, handleClose, 'textarea.notes-input, .detail-empty .btn-primary');
+
+  // Initialize local note drafts when the modal opens (and only then, so
+  // realtime updates while typing do not clobber the draft).
+  useEffect(() => {
+    if (open && !prevOpenRef.current) {
+      const p1 = entry?.notes_p1 || '';
+      const p2 = entry?.notes_p2 || '';
+      notesDraftRef.current = { p1, p2 };
+      setNotesP1(p1);
+      setNotesP2(p2);
+      conflictPendingRef.current = {};
+      prevConflictRef.current = saveConflict ?? null;
+    }
+    prevOpenRef.current = open;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const clearTimer = useCallback((p: PersonaKey) => {
+    if (flushTimerRef.current[p]) {
+      clearTimeout(flushTimerRef.current[p]);
+      flushTimerRef.current[p] = null;
+    }
+  }, []);
+
+  const flushNotes = useCallback(
+    async (p: PersonaKey) => {
+      clearTimer(p);
+      const text = notesDraftRef.current[p];
+      const ok = await onSetNotesRef.current(p, text);
+      if (ok === false) conflictPendingRef.current[p] = text;
+    },
+    [clearTimer]
+  );
+
+  const flushNotesNow = useCallback(
+    (p: PersonaKey) => {
+      clearTimer(p);
+      flushNotes(p);
+    },
+    [clearTimer, flushNotes]
+  );
+
+  const scheduleNotesFlush = useCallback(
+    (p: PersonaKey) => {
+      clearTimer(p);
+      flushTimerRef.current[p] = setTimeout(() => flushNotes(p), NOTES_FLUSH_DELAY);
+    },
+    [clearTimer, flushNotes]
+  );
+
+  const handleNotesChange = useCallback(
+    (p: PersonaKey, value: string) => {
+      notesDraftRef.current[p] = value;
+      if (p === 'p1') setNotesP1(value);
+      else setNotesP2(value);
+      scheduleNotesFlush(p);
+    },
+    [scheduleNotesFlush]
+  );
+
+  // After the parent resolves a conflict (message cleared), resend the notes
+  // that were rejected so the user does not have to retype them.
+  useEffect(() => {
+    const wasConflict = prevConflictRef.current;
+    prevConflictRef.current = saveConflict ?? null;
+    if (wasConflict && !saveConflict) {
+      const pending = conflictPendingRef.current;
+      conflictPendingRef.current = {};
+      if (pending.p1 !== undefined) onSetNotesRef.current('p1', pending.p1);
+      if (pending.p2 !== undefined) onSetNotesRef.current('p2', pending.p2);
+    }
+  }, [saveConflict]);
 
   if (!open) return null;
 
@@ -62,17 +171,26 @@ export default function DayDetailModal({
   const selectedBy = entry?.selected_by === 'p2' ? 'Persona 2' : entry?.selected_by === 'p1' ? 'Persona 1' : null;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Día ${day}`} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Día ${day}`} onMouseDown={(e) => e.target === e.currentTarget && handleClose()}>
       <div className="modal-panel detail-modal" ref={panelRef}>
         <div className="modal-header">
           <h2>Día {day} de Octubre</h2>
-          <button className="btn btn-ghost" onClick={onClose} aria-label="Cerrar">✕</button>
+          <button className="btn btn-ghost" onClick={handleClose} aria-label="Cerrar">✕</button>
         </div>
 
-        {stale && (
+        {saveConflict ? (
           <div className="banner banner-error">
-            ⚠️ Este día fue modificado por otra persona. Revisa antes de guardar cambios.
+            <span>⚠️ {saveConflict}</span>
+            <button className="btn btn-ghost" onClick={() => onResolveConflict?.()}>
+              Recargar y reintentar
+            </button>
           </div>
+        ) : (
+          stale && (
+            <div className="banner banner-error">
+              ⚠️ Este día fue modificado por otra persona. Revisa antes de guardar cambios.
+            </div>
+          )
         )}
 
         {!entry?.movie_id ? (
@@ -115,10 +233,8 @@ export default function DayDetailModal({
                   className="notes-input"
                   placeholder="Notas de Persona 1…"
                   value={notesP1}
-                  onChange={(e) => {
-                    setNotesP1(e.target.value);
-                    onSetNotes('p1', e.target.value);
-                  }}
+                  onChange={(e) => handleNotesChange('p1', e.target.value)}
+                  onBlur={() => flushNotesNow('p1')}
                   rows={2}
                   aria-label="Notas de Persona 1"
                 />
@@ -130,10 +246,8 @@ export default function DayDetailModal({
                   className="notes-input"
                   placeholder="Notas de Persona 2…"
                   value={notesP2}
-                  onChange={(e) => {
-                    setNotesP2(e.target.value);
-                    onSetNotes('p2', e.target.value);
-                  }}
+                  onChange={(e) => handleNotesChange('p2', e.target.value)}
+                  onBlur={() => flushNotesNow('p2')}
                   rows={2}
                   aria-label="Notas de Persona 2"
                 />

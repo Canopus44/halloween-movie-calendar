@@ -51,6 +51,9 @@ export function subscribeToChanges(callback: ChangeCallback): () => void {
 
   const ch = c
     .channel('calendar-changes')
+    // DELETE is intentionally excluded: the app never deletes calendar_entries
+    // (no remove/clear flow exists), so reacting to deletes would only ever
+    // process events we cannot produce. Revisit if a delete feature is added.
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'calendar_entries' }, handleChange)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'calendar_entries' }, handleChange)
     .subscribe();

@@ -29,6 +29,27 @@ function saveCache(entries: Map<string, CalendarEntry>) {
   }
 }
 
+export interface SaveResult {
+  conflict: boolean;
+  entry?: CalendarEntry;
+}
+
+/** Own writes echo back through realtime with the exact timestamp we stored. */
+function timestampsEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (!Number.isNaN(ta) && !Number.isNaN(tb)) return Math.abs(ta - tb) < 2000;
+  return false;
+}
+
+/** lastFetchRef must never move backwards: it is the freshness watermark. */
+function setServerUpdatedAt(map: Map<string, string>, dateKey: string, updatedAt: string) {
+  if (!updatedAt) return;
+  const cur = map.get(dateKey);
+  if (!cur || updatedAt > cur) map.set(dateKey, updatedAt);
+}
+
 export function useCalendar() {
   const [entries, setEntries] = useState<Map<string, CalendarEntry>>(() => loadCache());
   const [loading, setLoading] = useState(true);
@@ -39,6 +60,9 @@ export function useCalendar() {
   const latestRef = useRef<Map<string, CalendarEntry>>(entries);
   // Server-authoritative updated_at per date_key (from fetch / realtime / confirmed upsert).
   const lastFetchRef = useRef<Map<string, string>>(new Map());
+  // updated_at we sent for our own last write per date_key — used to recognize
+  // realtime echoes of our own saves (which must not look like foreign edits).
+  const ownLastSavedRef = useRef<Map<string, string>>(new Map());
 
   // Compute the next map from the source-of-truth ref, then persist via effect —
   // no side effects inside the state updater.
@@ -67,6 +91,9 @@ export function useCalendar() {
       setError(e instanceof Error ? e.message : 'No se pudo sincronizar');
       setRealtimeOnline(false);
       setDemoMode(true);
+    } finally {
+      // Initial mount sync and every manual retry must clear the loading state.
+      setLoading(false);
     }
   }, []);
 
@@ -76,10 +103,22 @@ export function useCalendar() {
 
   useEffect(() => {
     const unsubscribe = subscribeToChanges((entry) => {
-      lastFetchRef.current.set(entry.date_key, entry.updated_at ?? '');
+      const dateKey = entry.date_key;
+      const remoteUpdatedAt = entry.updated_at ?? '';
+      const ownUpdatedAt = ownLastSavedRef.current.get(dateKey);
+      // Echo of a save we just made ourselves: state is already applied
+      // optimistically and the watermark already advanced. Do not treat it as
+      // a foreign edit (no merge, no realtimeOnline flips, no ref clears).
+      if (ownUpdatedAt && timestampsEqual(remoteUpdatedAt, ownUpdatedAt)) {
+        return;
+      }
+      // Genuine change from another client: forget our own-write marker so a
+      // future write of ours is recognized again as ours.
+      ownLastSavedRef.current.delete(dateKey);
+      setServerUpdatedAt(lastFetchRef.current, dateKey, remoteUpdatedAt);
       updateEntries((prev) => {
         const next = new Map(prev);
-        next.set(entry.date_key, entry);
+        next.set(dateKey, entry);
         return next;
       });
     });
@@ -93,7 +132,7 @@ export function useCalendar() {
   }, []);
 
   const saveEntry = useCallback(
-    async (partial: Partial<CalendarEntry>, loadedUpdatedAt?: string | null): Promise<{ conflict: boolean }> => {
+    async (partial: Partial<CalendarEntry>, loadedUpdatedAt?: string | null): Promise<SaveResult> => {
       if (!partial.date_key) return { conflict: false };
 
       if (loadedUpdatedAt) {
@@ -135,19 +174,23 @@ export function useCalendar() {
       });
 
       if (isSupabaseConfigured) {
+        // Mark this timestamp as ours BEFORE the write lands so a realtime echo
+        // racing the HTTP response is still recognized as our own.
+        ownLastSavedRef.current.set(merged.date_key, merged.updated_at ?? '');
         try {
           await upsertEntry(merged);
-          lastFetchRef.current.set(merged.date_key, merged.updated_at ?? '');
+          setServerUpdatedAt(lastFetchRef.current, merged.date_key, merged.updated_at ?? '');
           setRealtimeOnline(true);
           setDemoMode(false);
         } catch (e) {
+          ownLastSavedRef.current.delete(merged.date_key);
           setError(e instanceof Error ? e.message : 'No se pudo guardar');
           setRealtimeOnline(false);
           setDemoMode(true);
         }
       }
 
-      return { conflict: false };
+      return { conflict: false, entry: merged };
     },
     [updateEntries]
   );

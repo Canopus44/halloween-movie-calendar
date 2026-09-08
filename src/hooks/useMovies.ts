@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Movie } from '../types';
 import { MovieCategory } from '../config';
 import {
@@ -91,11 +91,16 @@ export function useDebouncedSearch(delay = 400) {
     [delay]
   );
 
-  useEffect(() => {
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
+  const cancel = useCallback(() => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
   }, []);
 
-  return debounce;
+  useEffect(() => {
+    return () => cancel();
+  }, [cancel]);
+
+  return useMemo(() => ({ debounce, cancel }), [debounce, cancel]);
 }

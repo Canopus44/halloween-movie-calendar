@@ -4,7 +4,7 @@ import { Persona, Movie } from '../types';
 import { buildOctoberDays } from '../utils/date';
 import { computeStats } from '../utils/stats';
 import { usePersona } from '../hooks/usePersona';
-import { useCalendar } from '../hooks/useCalendar';
+import { useCalendar, SaveResult } from '../hooks/useCalendar';
 import PersonaPicker from '../components/PersonaPicker';
 import StatsBar from '../components/StatsBar';
 import FilterTabs, { FilterValue } from '../components/FilterTabs';
@@ -13,6 +13,8 @@ import CalendarGrid from '../components/CalendarGrid';
 import MovieModal from '../components/MovieModal';
 import DayDetailModal from '../components/DayDetailModal';
 import Footer from '../components/Footer';
+
+const CONFLICT_MESSAGE = 'Este día fue modificado por otra persona. Tus cambios no se guardaron.';
 
 export default function CalendarPage() {
   const navigate = useNavigate();
@@ -23,6 +25,7 @@ export default function CalendarPage() {
   const [movieModalDay, setMovieModalDay] = useState<number | null>(null);
   const [detailDay, setDetailDay] = useState<number | null>(null);
   const [detailLoadedAt, setDetailLoadedAt] = useState<string | null>(null);
+  const [conflictMsg, setConflictMsg] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
 
   const days = useMemo(() => buildOctoberDays(), []);
@@ -37,51 +40,91 @@ export default function CalendarPage() {
     }
   }, [calendar]);
 
+  /** Await a save: on success advance the modal baseline so later saves of the
+   *  same modal session are not mistaken for conflicts. On a genuine conflict,
+   *  surface the message and leave the baseline untouched. */
+  const runSave = useCallback(async (save: Promise<SaveResult>): Promise<boolean> => {
+    const result = await save;
+    if (result.conflict) {
+      setConflictMsg(CONFLICT_MESSAGE);
+      return false;
+    }
+    if (result.entry?.updated_at) setDetailLoadedAt(result.entry.updated_at);
+    setConflictMsg(null);
+    return true;
+  }, []);
+
   const handleSelectMovie = useCallback(
-    (movie: Movie) => {
-      if (movieModalDay != null) {
-        calendar.setMovie(movieModalDay, { ...movie, genres: movie.genres ?? [] }, persona, detailLoadedAt);
-      }
+    async (movie: Movie): Promise<boolean> => {
+      if (movieModalDay == null) return true;
+      const dateKey = days[movieModalDay - 1]?.dateKey;
+      if (!dateKey) return true;
+      const result = await calendar.setMovie(
+        movieModalDay,
+        { ...movie, genres: movie.genres ?? [] },
+        persona,
+        detailLoadedAt
+      );
+      if (result.conflict) return false; // keep MovieModal open with its message
+      if (result.entry?.updated_at) setDetailLoadedAt(result.entry.updated_at);
       setMovieModalDay(null);
+      return true;
     },
-    [movieModalDay, persona, calendar, detailLoadedAt]
+    [movieModalDay, days, persona, calendar, detailLoadedAt]
   );
 
   const handleToggleWatched = useCallback(
-    (watched: boolean) => {
+    async (watched: boolean) => {
       if (detailDay == null) return;
       const dateKey = `${days[detailDay - 1].dateKey}`;
-      calendar.markWatched(dateKey, watched, persona, detailLoadedAt);
+      await runSave(calendar.markWatched(dateKey, watched, persona, detailLoadedAt));
     },
-    [detailDay, days, persona, calendar, detailLoadedAt]
+    [detailDay, days, persona, calendar, detailLoadedAt, runSave]
   );
 
   const handleSetRating = useCallback(
-    (p: Persona, value: number) => {
+    async (p: Persona, value: number) => {
       if (detailDay == null) return;
       const dateKey = `${days[detailDay - 1].dateKey}`;
-      calendar.setRating(dateKey, p, value, detailLoadedAt);
+      await runSave(calendar.setRating(dateKey, p, value, detailLoadedAt));
     },
-    [detailDay, days, persona, calendar, detailLoadedAt]
+    [detailDay, days, persona, calendar, detailLoadedAt, runSave]
   );
 
   const handleSetNotes = useCallback(
-    (p: Persona, text: string) => {
-      if (detailDay == null) return;
+    async (p: Persona, text: string): Promise<boolean> => {
+      if (detailDay == null) return true;
       const dateKey = `${days[detailDay - 1].dateKey}`;
-      calendar.setNotes(dateKey, p, text, detailLoadedAt);
+      return runSave(calendar.setNotes(dateKey, p, text, detailLoadedAt));
     },
-    [detailDay, days, persona, calendar, detailLoadedAt]
+    [detailDay, days, persona, calendar, detailLoadedAt, runSave]
   );
 
   const openDetail = useCallback(
     (day: number) => {
       const dateKey = days[day - 1]?.dateKey ?? '';
       setDetailLoadedAt(calendar.entries.get(dateKey)?.updated_at ?? null);
+      setConflictMsg(null);
       setDetailDay(day);
     },
     [days, calendar.entries]
   );
+
+  /** Re-capture the server baseline for the detail modal after a conflict. The
+   *  realtime channel already merged the foreign version into entries. */
+  const resolveConflict = useCallback(() => {
+    if (detailDay == null) return;
+    const dateKey = days[detailDay - 1]?.dateKey ?? '';
+    setDetailLoadedAt(calendar.entries.get(dateKey)?.updated_at ?? null);
+    setConflictMsg(null);
+  }, [detailDay, days, calendar.entries]);
+
+  const resolveMovieConflict = useCallback(() => {
+    if (movieModalDay == null) return;
+    const dateKey = days[movieModalDay - 1]?.dateKey;
+    if (!dateKey) return;
+    setDetailLoadedAt(calendar.entries.get(dateKey)?.updated_at ?? null);
+  }, [movieModalDay, days, calendar.entries]);
 
   const detailEntry = detailDay != null ? calendar.entries.get(days[detailDay - 1]?.dateKey ?? '') : undefined;
   const detailDateKey = detailDay != null ? days[detailDay - 1]?.dateKey ?? '' : '';
@@ -154,7 +197,12 @@ export default function CalendarPage() {
         onClose={() => setPickerOpen(false)}
       />
 
-      <MovieModal open={movieModalDay != null} onClose={() => setMovieModalDay(null)} onSelect={handleSelectMovie} />
+      <MovieModal
+        open={movieModalDay != null}
+        onClose={() => setMovieModalDay(null)}
+        onSelect={handleSelectMovie}
+        onReload={resolveMovieConflict}
+      />
 
       <DayDetailModal
         open={detailDay != null}
@@ -162,8 +210,11 @@ export default function CalendarPage() {
         entry={detailEntry}
         persona={persona}
         stale={stale}
+        saveConflict={conflictMsg}
+        onResolveConflict={resolveConflict}
         onClose={() => setDetailDay(null)}
         onChangeMovie={() => {
+          setConflictMsg(null);
           setDetailDay(null);
           setMovieModalDay(detailDay);
         }}

@@ -19,8 +19,12 @@ function getFocusable(root: HTMLElement): HTMLElement[] {
  * Shared modal accessibility: Esc-to-close, focus trap (Tab cycles within the
  * panel), focus move-in on open, and focus restore to the trigger on close.
  * Returns a ref to attach to the modal panel element.
+ *
+ * preferredFocusSelector (optional): CSS selector for the control that should
+ * receive initial focus (e.g. the search box in a picker modal). Falls back to
+ * the first focusable element when the selector matches nothing visible.
  */
-export function useModalA11y(open: boolean, onClose: () => void) {
+export function useModalA11y(open: boolean, onClose: () => void, preferredFocusSelector?: string) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
 
@@ -31,7 +35,14 @@ export function useModalA11y(open: boolean, onClose: () => void) {
     if (panel) {
       triggerRef.current = document.activeElement as HTMLElement | null;
       const focusables = getFocusable(panel);
-      (focusables[0] ?? panel)?.focus();
+      const preferred = preferredFocusSelector
+        ? panel.querySelector<HTMLElement>(preferredFocusSelector)
+        : null;
+      const visiblePreferred =
+        preferred && (preferred.offsetParent !== null || preferred === document.activeElement)
+          ? preferred
+          : null;
+      (visiblePreferred ?? focusables[0] ?? panel)?.focus();
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -63,7 +74,7 @@ export function useModalA11y(open: boolean, onClose: () => void) {
       triggerRef.current?.focus?.();
       triggerRef.current = null;
     };
-  }, [open, onClose]);
+  }, [open, onClose, preferredFocusSelector]);
 
   return panelRef;
 }
