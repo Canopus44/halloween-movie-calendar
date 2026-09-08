@@ -1,4 +1,5 @@
 import { Persona } from '../types';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface PersonaPickerProps {
   open: boolean;
@@ -8,11 +9,13 @@ interface PersonaPickerProps {
 }
 
 export default function PersonaPicker({ open, onSelect, current, onClose }: PersonaPickerProps) {
+  const panelRef = useModalA11y(open, onClose);
+
   if (!open) return null;
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Elige tu persona">
-      <div className="modal-panel persona-picker">
+      <div className="modal-panel persona-picker" ref={panelRef}>
         <h2 className="persona-title">¿Quién eres?</h2>
         <p className="persona-subtitle">Elige tu usuario para guardar tus calificaciones y notas por separado.</p>
         <div className="persona-options">

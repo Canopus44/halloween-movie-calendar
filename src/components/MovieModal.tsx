@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Movie } from '../types';
-import { MOVIE_CATEGORIES } from '../config';
+import { MOVIE_CATEGORIES, MovieCategory } from '../config';
 import { posterUrl } from '../services/tmdb';
 import { useMovies, useDebouncedSearch, useGenres } from '../hooks/useMovies';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface MovieModalProps {
   open: boolean;
@@ -14,32 +15,58 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
   const { results, loading, error, search, loadCategory, loadRecs } = useMovies();
   const genres = useGenres();
   const debounce = useDebouncedSearch(400);
+  const panelRef = useModalA11y(open, onClose);
   const [query, setQuery] = useState('');
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
+  const [activeCat, setActiveCat] = useState<MovieCategory | null>(null);
+  const [activeRecsParams, setActiveRecsParams] = useState<Record<string, string> | null>(null);
+  const wasSearching = useRef(false);
 
   useEffect(() => {
     if (open) {
-      loadCategory(MOVIE_CATEGORIES[0]);
-      setActiveLabel(MOVIE_CATEGORIES[0].label);
+      const first = MOVIE_CATEGORIES[0];
+      setActiveCat(first);
+      setActiveRecsParams(null);
+      setActiveLabel(first.label);
+      loadCategory(first);
     }
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, loadCategory]);
+
+  const reloadActive = useCallback(() => {
+    if (activeCat) {
+      loadCategory(activeCat);
+    } else if (activeRecsParams) {
+      loadRecs(activeRecsParams);
+    }
+  }, [activeCat, activeRecsParams, loadCategory, loadRecs]);
 
   useEffect(() => {
     if (!open) return;
     const q = query.trim();
-    if (!q) return;
+    if (!q) {
+      if (wasSearching.current) {
+        wasSearching.current = false;
+        reloadActive();
+      }
+      return;
+    }
+    wasSearching.current = true;
     debounce(() => search(q));
-  }, [query, open, debounce, search]);
+  }, [query, open, debounce, search, reloadActive]);
 
   const handleCategory = (label: string) => {
     const cat = MOVIE_CATEGORIES.find((c) => c.label === label);
     if (!cat) return;
     setActiveLabel(label);
+    setActiveCat(cat);
+    setActiveRecsParams(null);
     loadCategory(cat);
   };
 
   const handleRecs = (label: string, params: Record<string, string>) => {
     setActiveLabel(label);
+    setActiveCat(null);
+    setActiveRecsParams(params);
     loadRecs(params);
   };
 
@@ -47,7 +74,7 @@ export default function MovieModal({ open, onClose, onSelect }: MovieModalProps)
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Elegir película" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-panel movie-modal">
+      <div className="modal-panel movie-modal" ref={panelRef}>
         <div className="modal-header">
           <h2>Elegir película</h2>
           <button className="btn btn-ghost" onClick={onClose} aria-label="Cerrar">✕</button>

@@ -22,6 +22,7 @@ export default function CalendarPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [movieModalDay, setMovieModalDay] = useState<number | null>(null);
   const [detailDay, setDetailDay] = useState<number | null>(null);
+  const [detailLoadedAt, setDetailLoadedAt] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
 
   const days = useMemo(() => buildOctoberDays(), []);
@@ -39,41 +40,52 @@ export default function CalendarPage() {
   const handleSelectMovie = useCallback(
     (movie: Movie) => {
       if (movieModalDay != null) {
-        calendar.setMovie(movieModalDay, { ...movie, genres: movie.genres ?? [] }, persona);
+        calendar.setMovie(movieModalDay, { ...movie, genres: movie.genres ?? [] }, persona, detailLoadedAt);
       }
       setMovieModalDay(null);
     },
-    [movieModalDay, persona, calendar]
+    [movieModalDay, persona, calendar, detailLoadedAt]
   );
 
   const handleToggleWatched = useCallback(
     (watched: boolean) => {
       if (detailDay == null) return;
       const dateKey = `${days[detailDay - 1].dateKey}`;
-      calendar.markWatched(dateKey, watched, persona);
+      calendar.markWatched(dateKey, watched, persona, detailLoadedAt);
     },
-    [detailDay, days, persona, calendar]
+    [detailDay, days, persona, calendar, detailLoadedAt]
   );
 
   const handleSetRating = useCallback(
     (p: Persona, value: number) => {
       if (detailDay == null) return;
       const dateKey = `${days[detailDay - 1].dateKey}`;
-      calendar.setRating(dateKey, p, value);
+      calendar.setRating(dateKey, p, value, detailLoadedAt);
     },
-    [detailDay, days, persona, calendar]
+    [detailDay, days, persona, calendar, detailLoadedAt]
   );
 
   const handleSetNotes = useCallback(
     (p: Persona, text: string) => {
       if (detailDay == null) return;
       const dateKey = `${days[detailDay - 1].dateKey}`;
-      calendar.setNotes(dateKey, p, text);
+      calendar.setNotes(dateKey, p, text, detailLoadedAt);
     },
-    [detailDay, days, persona, calendar]
+    [detailDay, days, persona, calendar, detailLoadedAt]
+  );
+
+  const openDetail = useCallback(
+    (day: number) => {
+      const dateKey = days[day - 1]?.dateKey ?? '';
+      setDetailLoadedAt(calendar.entries.get(dateKey)?.updated_at ?? null);
+      setDetailDay(day);
+    },
+    [days, calendar.entries]
   );
 
   const detailEntry = detailDay != null ? calendar.entries.get(days[detailDay - 1]?.dateKey ?? '') : undefined;
+  const detailDateKey = detailDay != null ? days[detailDay - 1]?.dateKey ?? '' : '';
+  const stale = detailDay != null ? calendar.isStale(detailDateKey, detailLoadedAt) : false;
 
   return (
     <div className="calendar-page">
@@ -125,7 +137,7 @@ export default function CalendarPage() {
           <>
             <StatsBar stats={stats} />
             <FilterTabs value={filter} onChange={setFilter} />
-            <CalendarGrid days={days} entries={calendar.entries} filter={filter} onOpen={setDetailDay} />
+            <CalendarGrid days={days} entries={calendar.entries} filter={filter} onOpen={openDetail} />
           </>
         )}
 
@@ -149,6 +161,7 @@ export default function CalendarPage() {
         day={detailDay ?? 1}
         entry={detailEntry}
         persona={persona}
+        stale={stale}
         onClose={() => setDetailDay(null)}
         onChangeMovie={() => {
           setDetailDay(null);

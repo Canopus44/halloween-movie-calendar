@@ -59,15 +59,6 @@ export async function searchMovies(query: string): Promise<Movie[]> {
   return data.results || [];
 }
 
-export async function getMovieDetails(id: number): Promise<Movie | null> {
-  try {
-    const data = await tmdbFetch<Movie>(`/movie/${id}`, { language: 'es-ES' });
-    return data;
-  } catch {
-    return null;
-  }
-}
-
 export async function discoverMovies(params: Record<string, string>): Promise<Movie[]> {
   const data = await tmdbFetch<{ results: Movie[] }>('/discover/movie', {
     language: 'es-ES',
@@ -161,7 +152,9 @@ export async function discoverCategory(category: MovieCategory): Promise<Movie[]
       if (kwId) {
         params.with_keywords = String(kwId);
       } else {
-        delete params.with_keywords;
+        throw new TmdbError(
+          `No pudimos cargar la categoría "${category.label}". Intenta de nuevo o elige otra categoría.`
+        );
       }
     } else {
       delete params.with_keywords;

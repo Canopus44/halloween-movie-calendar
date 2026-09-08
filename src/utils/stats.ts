@@ -1,8 +1,9 @@
 import { CalendarEntry, AppStats } from '../types';
+import { buildOctoberDays } from './date';
 
 export function computeStats(entries: Map<string, CalendarEntry>): AppStats {
   const all = Array.from(entries.values());
-  const total = all.length || 31;
+  const total = buildOctoberDays().length;
   const watched = all.filter((e) => e.watched).length;
   const pending = total - watched;
 

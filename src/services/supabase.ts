@@ -40,28 +40,22 @@ export async function upsertEntry(entry: Partial<CalendarEntry>): Promise<void> 
 
 type ChangeCallback = (entry: CalendarEntry) => void;
 
-let channel: ReturnType<SupabaseClient['channel']> | null = null;
-
 export function subscribeToChanges(callback: ChangeCallback): () => void {
   const c = getClient();
   if (!c) return () => {};
 
-  channel = c
+  const handleChange = (payload: { new: CalendarEntry }) => {
+    const entry = payload.new as CalendarEntry;
+    if (entry) callback(entry);
+  };
+
+  const ch = c
     .channel('calendar-changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'calendar_entries' },
-      (payload) => {
-        const entry = payload.new as CalendarEntry;
-        if (entry) callback(entry);
-      }
-    )
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'calendar_entries' }, handleChange)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'calendar_entries' }, handleChange)
     .subscribe();
 
   return () => {
-    if (channel) {
-      c.removeChannel(channel);
-      channel = null;
-    }
+    c.removeChannel(ch);
   };
 }

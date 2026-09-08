@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CalendarEntry, Persona } from '../types';
 import { posterUrl, backdropUrl } from '../services/tmdb';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface DayDetailModalProps {
   open: boolean;
@@ -29,6 +30,7 @@ export default function DayDetailModal({
 }: DayDetailModalProps) {
   const [notesP1, setNotesP1] = useState('');
   const [notesP2, setNotesP2] = useState('');
+  const panelRef = useModalA11y(open, onClose);
 
   useEffect(() => {
     if (open) {
@@ -36,15 +38,6 @@ export default function DayDetailModal({
       setNotesP2(entry?.notes_p2 || '');
     }
   }, [open, entry?.notes_p1, entry?.notes_p2]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -70,7 +63,7 @@ export default function DayDetailModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Día ${day}`} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-panel detail-modal">
+      <div className="modal-panel detail-modal" ref={panelRef}>
         <div className="modal-header">
           <h2>Día {day} de Octubre</h2>
           <button className="btn btn-ghost" onClick={onClose} aria-label="Cerrar">✕</button>

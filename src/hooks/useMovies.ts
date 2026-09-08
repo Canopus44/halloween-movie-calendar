@@ -12,48 +12,58 @@ export function useMovies() {
   const [results, setResults] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
   const search = useCallback(async (query: string) => {
     if (!query.trim()) {
       setResults([]);
       return;
     }
+    const id = ++requestId.current;
     setLoading(true);
     setError(null);
     try {
       const movies = await searchMovies(query);
+      if (id !== requestId.current) return;
       setResults(movies);
     } catch (e) {
+      if (id !== requestId.current) return;
       setError(e instanceof Error ? e.message : 'Error de búsqueda');
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }, []);
 
   const loadCategory = useCallback(async (category: MovieCategory) => {
+    const id = ++requestId.current;
     setLoading(true);
     setError(null);
     try {
       const movies = await discoverCategory(category);
+      if (id !== requestId.current) return;
       setResults(movies);
     } catch (e) {
+      if (id !== requestId.current) return;
       setError(e instanceof Error ? e.message : 'Error al cargar películas');
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }, []);
 
   const loadRecs = useCallback(
     async (params: Record<string, string>) => {
+      const id = ++requestId.current;
       setLoading(true);
       setError(null);
       try {
         const movies = await discoverMoviesCached(params);
+        if (id !== requestId.current) return;
         setResults(movies);
       } catch (e) {
+        if (id !== requestId.current) return;
         setError(e instanceof Error ? e.message : 'Error al cargar recomendaciones');
       } finally {
-        setLoading(false);
+        if (id === requestId.current) setLoading(false);
       }
     },
     []
