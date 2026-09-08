@@ -1,0 +1,91 @@
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Movie } from '../types';
+import { MovieCategory } from '../config';
+import {
+  searchMovies,
+  discoverMoviesCached,
+  discoverCategory,
+  getGenres,
+} from '../services/tmdb';
+
+export function useMovies() {
+  const [results, setResults] = useState<Movie[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const search = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setResults([]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const movies = await searchMovies(query);
+      setResults(movies);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error de búsqueda');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadCategory = useCallback(async (category: MovieCategory) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const movies = await discoverCategory(category);
+      setResults(movies);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al cargar películas');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadRecs = useCallback(
+    async (params: Record<string, string>) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const movies = await discoverMoviesCached(params);
+        setResults(movies);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Error al cargar recomendaciones');
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  return { results, loading, error, search, loadCategory, loadRecs };
+}
+
+export function useGenres() {
+  const [genres, setGenres] = useState<Map<number, string>>(new Map());
+  useEffect(() => {
+    getGenres().then(setGenres).catch(() => {});
+  }, []);
+  return genres;
+}
+
+export function useDebouncedSearch(delay = 400) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const debounce = useCallback(
+    (fn: () => void) => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(fn, delay);
+    },
+    [delay]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  return debounce;
+}
