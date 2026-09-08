@@ -2,7 +2,7 @@
 
 Calendario de películas de Halloween: 31 días de octubre, cada día una película. Dos personas comparten el estado (películas, vistas, calificaciones y notas) sin necesidad de login, sincronizado en tiempo real con Supabase. Las películas vienen de la API de TMDB.
 
-**URL de producción (GitHub Pages):** https://santiago-molina-mdc.github.io/halloween-movie-calendar/
+**URL de producción (GitHub Pages):** https://canopus44.github.io/halloween-movie-calendar/
 
 ---
 
@@ -103,7 +103,7 @@ npm run deploy
 
 3. En GitHub: Settings → Pages → Source → **Deploy from a branch** → rama `gh-pages` → Save.
 
-La app quedará en: `https://santiago-molina-mdc.github.io/halloween-movie-calendar/`
+La app quedará en: `https://canopus44.github.io/halloween-movie-calendar/`
 
 ## 8. Uso
 
