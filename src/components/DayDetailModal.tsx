@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CalendarEntry, Persona } from '../types';
 import { posterUrl, backdropUrl } from '../services/tmdb';
 import { useModalA11y } from '../hooks/useModalA11y';
+import { personaConfig } from '../config';
 
 interface DayDetailModalProps {
   open: boolean;
@@ -23,6 +24,13 @@ interface DayDetailModalProps {
 type PersonaKey = 'p1' | 'p2';
 
 const NOTES_FLUSH_DELAY = 600;
+
+/** Resolve a stored persona id (selected_by/updated_by) to its display label,
+ *  guarding against unknown legacy values. */
+function storedPersonaLabel(id: string | null | undefined): string | null {
+  if (id !== 'p1' && id !== 'p2') return null;
+  return personaConfig(id).display;
+}
 
 export default function DayDetailModal({
   open,
@@ -168,7 +176,7 @@ export default function DayDetailModal({
     ));
   };
 
-  const selectedBy = entry?.selected_by === 'p2' ? 'Persona 2' : entry?.selected_by === 'p1' ? 'Persona 1' : null;
+  const selectedBy = storedPersonaLabel(entry?.selected_by);
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`Día ${day}`} onMouseDown={(e) => e.target === e.currentTarget && handleClose()}>
@@ -227,29 +235,29 @@ export default function DayDetailModal({
 
             <div className="rating-section">
               <div className="rating-block">
-                <span className="rating-label">🧙 Persona 1</span>
+                <span className="rating-label">{personaConfig('p1').display}</span>
                 <div className="stars">{stars('p1')}</div>
                 <textarea
                   className="notes-input"
-                  placeholder="Notas de Persona 1…"
+                  placeholder={`Notas de ${personaConfig('p1').name}…`}
                   value={notesP1}
                   onChange={(e) => handleNotesChange('p1', e.target.value)}
                   onBlur={() => flushNotesNow('p1')}
                   rows={2}
-                  aria-label="Notas de Persona 1"
+                  aria-label={`Notas de ${personaConfig('p1').name}`}
                 />
               </div>
               <div className="rating-block">
-                <span className="rating-label">🧛 Persona 2</span>
+                <span className="rating-label">{personaConfig('p2').display}</span>
                 <div className="stars">{stars('p2')}</div>
                 <textarea
                   className="notes-input"
-                  placeholder="Notas de Persona 2…"
+                  placeholder={`Notas de ${personaConfig('p2').name}…`}
                   value={notesP2}
                   onChange={(e) => handleNotesChange('p2', e.target.value)}
                   onBlur={() => flushNotesNow('p2')}
                   rows={2}
-                  aria-label="Notas de Persona 2"
+                  aria-label={`Notas de ${personaConfig('p2').name}`}
                 />
               </div>
             </div>
@@ -258,9 +266,11 @@ export default function DayDetailModal({
 
         <div className="detail-footer">
           {selectedBy && <span>Seleccionada por: {selectedBy}</span>}
-          {entry?.updated_by && <span>Actualizado por: {entry.updated_by === 'p1' ? 'Persona 1' : entry.updated_by === 'p2' ? 'Persona 2' : entry.updated_by}</span>}
+          {entry?.updated_by && (
+            <span>Actualizado por: {storedPersonaLabel(entry.updated_by) ?? entry.updated_by}</span>
+          )}
           {entry?.updated_at && <span>Última actualización: {new Date(entry.updated_at).toLocaleString()}</span>}
-          {persona && <span className="detail-you">Eres {persona === 'p1' ? 'Persona 1' : 'Persona 2'}</span>}
+          {persona && <span className="detail-you">Eres {personaConfig(persona).display}</span>}
         </div>
       </div>
     </div>

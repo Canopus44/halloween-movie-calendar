@@ -1,6 +1,7 @@
 import { CalendarEntry, OctoberDay } from '../types';
 import { posterUrl } from '../services/tmdb';
 import { isToday } from '../utils/date';
+import { personaConfig } from '../config';
 
 interface DayCardProps {
   day: OctoberDay;
@@ -11,7 +12,8 @@ interface DayCardProps {
 export default function DayCard({ day, entry, onOpen }: DayCardProps) {
   const poster = posterUrl(entry?.poster_path, 'w342');
   const today = isToday(day.dateKey);
-  const selectedBy = entry?.selected_by === 'p2' ? 'Persona 2' : entry?.selected_by === 'p1' ? 'Persona 1' : null;
+  const selectedBy =
+    entry?.selected_by === 'p1' || entry?.selected_by === 'p2' ? personaConfig(entry.selected_by).display : null;
 
   return (
     <button className={`day-card ${entry?.watched ? 'watched' : ''}`} onClick={() => onOpen(day.day)} aria-label={`Día ${day.day}${entry?.movie_title ? ', ' + entry.movie_title : ''}`}>

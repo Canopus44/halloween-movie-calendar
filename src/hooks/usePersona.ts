@@ -1,12 +1,8 @@
 import { useCallback, useState } from 'react';
 import { Persona } from '../types';
+import { personaConfig } from '../config';
 
 const STORAGE_KEY = 'hmc_persona';
-
-const PERSONA_LABELS: Record<Persona, string> = {
-  p1: 'Persona 1',
-  p2: 'Persona 2',
-};
 
 export function usePersona() {
   const [persona, setPersonaState] = useState<Persona | null>(() => {
@@ -26,5 +22,5 @@ export function usePersona() {
 
   const clearPersona = useCallback(() => setPersona(null), [setPersona]);
 
-  return { persona, setPersona, clearPersona, personaLabel: persona ? PERSONA_LABELS[persona] : null };
+  return { persona, setPersona, clearPersona, personaLabel: persona ? personaConfig(persona).display : null };
 }

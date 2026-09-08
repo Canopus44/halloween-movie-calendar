@@ -1,4 +1,5 @@
 import { Persona } from '../types';
+import { PERSONAS } from '../config';
 import { useModalA11y } from '../hooks/useModalA11y';
 
 interface PersonaPickerProps {
@@ -19,12 +20,11 @@ export default function PersonaPicker({ open, onSelect, current, onClose }: Pers
         <h2 className="persona-title">¿Quién eres?</h2>
         <p className="persona-subtitle">Elige tu usuario para guardar tus calificaciones y notas por separado.</p>
         <div className="persona-options">
-          <button className="btn btn-secondary persona-btn" onClick={() => onSelect('p1')}>
-            🧙 Persona 1
-          </button>
-          <button className="btn btn-secondary persona-btn" onClick={() => onSelect('p2')}>
-            🧛 Persona 2
-          </button>
+          {PERSONAS.map((p) => (
+            <button key={p.id} className="btn btn-secondary persona-btn" onClick={() => onSelect(p.id)}>
+              {p.name} {p.emoji}
+            </button>
+          ))}
         </div>
         {current && (
           <button className="btn btn-ghost persona-close" onClick={onClose}>

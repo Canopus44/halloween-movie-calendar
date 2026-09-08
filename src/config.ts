@@ -1,3 +1,5 @@
+import { Persona } from './types';
+
 export const HALLOWEEN_YEAR = 2026;
 
 export const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
@@ -97,3 +99,25 @@ export const KEYWORD_QUERIES: Record<string, string> = {
   'Vampiros': 'vampire',
   'Zombies': 'zombie',
 };
+
+export interface PersonaConfig {
+  /** Internal id stored in localStorage and Supabase (selected_by/updated_by). */
+  id: Persona;
+  /** Plain name for placeholders and aria-labels. */
+  name: string;
+  /** Decorative emoji for the identity picker. */
+  emoji: string;
+  /** Full display identity shown next to the persona in the UI. */
+  display: string;
+}
+
+export const PERSONAS: PersonaConfig[] = [
+  { id: 'p1', name: 'Erika', emoji: '❤️', display: 'Erika ❤️' },
+  { id: 'p2', name: 'Santiago', emoji: '🎃', display: 'Santiago' },
+];
+
+const PERSONA_BY_ID = Object.fromEntries(PERSONAS.map((p) => [p.id, p])) as Record<Persona, PersonaConfig>;
+
+export function personaConfig(id: Persona): PersonaConfig {
+  return PERSONA_BY_ID[id];
+}

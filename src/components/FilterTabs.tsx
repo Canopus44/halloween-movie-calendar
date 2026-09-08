@@ -1,3 +1,5 @@
+import { PERSONAS } from '../config';
+
 export type FilterValue = 'all' | 'watched' | 'pending' | 'p1' | 'p2';
 
 interface FilterTabsProps {
@@ -9,8 +11,7 @@ const TABS: { value: FilterValue; label: string }[] = [
   { value: 'all', label: 'Todas' },
   { value: 'watched', label: 'Vistas' },
   { value: 'pending', label: 'Pendientes' },
-  { value: 'p1', label: 'Persona 1' },
-  { value: 'p2', label: 'Persona 2' },
+  ...PERSONAS.map((p) => ({ value: p.id as FilterValue, label: p.display })),
 ];
 
 export default function FilterTabs({ value, onChange }: FilterTabsProps) {
