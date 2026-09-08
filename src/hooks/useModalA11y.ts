@@ -27,13 +27,23 @@ function getFocusable(root: HTMLElement): HTMLElement[] {
 export function useModalA11y(open: boolean, onClose: () => void, preferredFocusSelector?: string) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  // Hold the latest close handler in a ref so parent re-renders (inline arrow
+  // props) do not re-run this effect and churn focus.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
 
     const panel = panelRef.current;
     if (panel) {
-      triggerRef.current = document.activeElement as HTMLElement | null;
+      const active = document.activeElement as HTMLElement | null;
+      // Only capture the trigger when it actually lives outside the panel;
+      // re-opening after a same-commit modal swap may leave a detached node
+      // focused, which we must not try to restore later.
+      if (active && active !== panel && !panel.contains(active)) {
+        triggerRef.current = active;
+      }
       const focusables = getFocusable(panel);
       const preferred = preferredFocusSelector
         ? panel.querySelector<HTMLElement>(preferredFocusSelector)
@@ -48,7 +58,7 @@ export function useModalA11y(open: boolean, onClose: () => void, preferredFocusS
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab') return;
@@ -71,10 +81,15 @@ export function useModalA11y(open: boolean, onClose: () => void, preferredFocusS
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      triggerRef.current?.focus?.();
+      const trigger = triggerRef.current;
       triggerRef.current = null;
+      // Skip restore when the trigger was unmounted (e.g. the DayDetail →
+      // MovieModal same-commit transition removed the button that opened us).
+      if (trigger && trigger.isConnected) trigger.focus?.();
     };
-  }, [open, onClose, preferredFocusSelector]);
+    // onClose intentionally excluded: consumed through onCloseRef so parent
+    // re-renders cannot re-trigger focus capture/restore churn.
+  }, [open, preferredFocusSelector]);
 
   return panelRef;
 }

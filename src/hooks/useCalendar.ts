@@ -34,13 +34,48 @@ export interface SaveResult {
   entry?: CalendarEntry;
 }
 
-/** Own writes echo back through realtime with the exact timestamp we stored. */
-function timestampsEqual(a: string, b: string): boolean {
+/** User-meaningful fields saveEntry persists. A realtime echo of our own write
+ *  matches these exactly; a foreign edit differs on at least one. Server-managed
+ *  timestamps are excluded so column transforms never create false echoes. */
+const ECHO_FIELDS: (keyof CalendarEntry)[] = [
+  'date_key',
+  'year',
+  'day',
+  'movie_id',
+  'movie_title',
+  'movie_original_title',
+  'poster_path',
+  'backdrop_path',
+  'overview',
+  'release_date',
+  'vote_average',
+  'genres',
+  'watched',
+  'rating_p1',
+  'rating_p2',
+  'notes_p1',
+  'notes_p2',
+  'selected_by',
+  'updated_by',
+];
+
+/** Null-tolerant value comparison. Postgres may coerce numerics (int4 vs JS
+ *  number) across the wire, so numeric twins count as equal. */
+function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
-  const ta = Date.parse(a);
-  const tb = Date.parse(b);
-  if (!Number.isNaN(ta) && !Number.isNaN(tb)) return Math.abs(ta - tb) < 2000;
+  if (a == null || b == null) return false;
+  if (typeof a === 'number' || typeof b === 'number') {
+    const na = Number(a);
+    const nb = Number(b);
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb;
+  }
   return false;
+}
+
+/** True when the remote payload carries exactly the user content we last wrote
+ *  for this day — an echo of our own upsert, not a foreign edit. */
+function isEchoOfOwnWrite(own: CalendarEntry, remote: CalendarEntry): boolean {
+  return ECHO_FIELDS.every((k) => sameValue(own[k], remote[k]));
 }
 
 /** lastFetchRef must never move backwards: it is the freshness watermark. */
@@ -60,9 +95,13 @@ export function useCalendar() {
   const latestRef = useRef<Map<string, CalendarEntry>>(entries);
   // Server-authoritative updated_at per date_key (from fetch / realtime / confirmed upsert).
   const lastFetchRef = useRef<Map<string, string>>(new Map());
-  // updated_at we sent for our own last write per date_key — used to recognize
-  // realtime echoes of our own saves (which must not look like foreign edits).
-  const ownLastSavedRef = useRef<Map<string, string>>(new Map());
+  // Full row we last wrote per date_key — used to recognize realtime echoes of
+  // our own saves by payload equality (a time window is unsafe: a foreign write
+  // landing within ±2s of ours must not be swallowed).
+  const ownLastSavedRef = useRef<Map<string, CalendarEntry>>(new Map());
+  // Serializes network writes per date_key so two overlapping upserts from this
+  // client cannot commit out of order on the server.
+  const pendingWritesRef = useRef<Map<string, Promise<SaveResult>>>(new Map());
 
   // Compute the next map from the source-of-truth ref, then persist via effect —
   // no side effects inside the state updater.
@@ -84,6 +123,8 @@ export function useCalendar() {
       latestRef.current = map;
       setEntries(map);
       lastFetchRef.current = new Map(rows.map((e) => [e.date_key, e.updated_at ?? '']));
+      // Fresh authoritative state: no stale own-write markers survive a sync.
+      ownLastSavedRef.current.clear();
       setLastSynced(new Date());
       setRealtimeOnline(true);
       setDemoMode(false);
@@ -104,18 +145,18 @@ export function useCalendar() {
   useEffect(() => {
     const unsubscribe = subscribeToChanges((entry) => {
       const dateKey = entry.date_key;
-      const remoteUpdatedAt = entry.updated_at ?? '';
-      const ownUpdatedAt = ownLastSavedRef.current.get(dateKey);
-      // Echo of a save we just made ourselves: state is already applied
-      // optimistically and the watermark already advanced. Do not treat it as
-      // a foreign edit (no merge, no realtimeOnline flips, no ref clears).
-      if (ownUpdatedAt && timestampsEqual(remoteUpdatedAt, ownUpdatedAt)) {
+      const ownWritten = ownLastSavedRef.current.get(dateKey);
+      // Realtime echo of a save we just made ourselves: the exact payload we
+      // wrote is already applied optimistically and the watermark advanced.
+      // Do not treat it as a foreign edit.
+      if (ownWritten && isEchoOfOwnWrite(ownWritten, entry)) {
         return;
       }
       // Genuine change from another client: forget our own-write marker so a
-      // future write of ours is recognized again as ours.
+      // future write of ours is recognized again as ours, then merge and
+      // advance the freshness watermark.
       ownLastSavedRef.current.delete(dateKey);
-      setServerUpdatedAt(lastFetchRef.current, dateKey, remoteUpdatedAt);
+      setServerUpdatedAt(lastFetchRef.current, dateKey, entry.updated_at ?? '');
       updateEntries((prev) => {
         const next = new Map(prev);
         next.set(dateKey, entry);
@@ -131,22 +172,33 @@ export function useCalendar() {
     return !!server && server > loadedUpdatedAt;
   }, []);
 
-  const saveEntry = useCallback(
+  /** Single network write attempt. The conflict guard runs here — at execution
+   *  time, against the latest watermark — so writes queued behind our own saves
+   *  are re-checked against reality instead of a stale enqueue-time snapshot. */
+  const doSave = useCallback(
     async (partial: Partial<CalendarEntry>, loadedUpdatedAt?: string | null): Promise<SaveResult> => {
       if (!partial.date_key) return { conflict: false };
+      const dateKey = partial.date_key;
 
       if (loadedUpdatedAt) {
-        const server = lastFetchRef.current.get(partial.date_key);
-        if (server && server > loadedUpdatedAt) {
+        const server = lastFetchRef.current.get(dateKey);
+        const ownWritten = ownLastSavedRef.current.get(dateKey);
+        // A watermark newer than the caller baseline is only a conflict when a
+        // foreign write caused it. If our own write is the one that advanced
+        // the watermark (marker present and at least as new), queued sibling
+        // writes from the same burst are legitimate, not conflicts.
+        const ownWriteExplainsAdvance =
+          !!ownWritten?.updated_at && !!server && server <= ownWritten.updated_at;
+        if (server && server > loadedUpdatedAt && !ownWriteExplainsAdvance) {
           return { conflict: true };
         }
       }
 
-      const current = latestRef.current.get(partial.date_key);
+      const current = latestRef.current.get(dateKey);
       const now = new Date().toISOString();
       const merged: CalendarEntry = {
-        date_key: partial.date_key,
-        day: partial.day ?? current?.day ?? parseInt(partial.date_key.slice(8), 10),
+        date_key: dateKey,
+        day: partial.day ?? current?.day ?? parseInt(dateKey.slice(8), 10),
         year: partial.year ?? current?.year ?? HALLOWEEN_YEAR,
         movie_id: partial.movie_id ?? current?.movie_id ?? null,
         movie_title: partial.movie_title ?? current?.movie_title ?? null,
@@ -174,9 +226,10 @@ export function useCalendar() {
       });
 
       if (isSupabaseConfigured) {
-        // Mark this timestamp as ours BEFORE the write lands so a realtime echo
-        // racing the HTTP response is still recognized as our own.
-        ownLastSavedRef.current.set(merged.date_key, merged.updated_at ?? '');
+        // Remember the FULL row as ours BEFORE the write lands so a realtime
+        // echo racing the HTTP response is still recognized as our own (and so
+        // a foreign write is detected by payload difference, not timestamp).
+        ownLastSavedRef.current.set(merged.date_key, merged);
         try {
           await upsertEntry(merged);
           setServerUpdatedAt(lastFetchRef.current, merged.date_key, merged.updated_at ?? '');
@@ -193,6 +246,26 @@ export function useCalendar() {
       return { conflict: false, entry: merged };
     },
     [updateEntries]
+  );
+
+  /** Serializes writes per date_key: each save chains onto the previous one so
+   *  overlapping full-row upserts from this client cannot commit out of order. */
+  const saveEntry = useCallback(
+    (partial: Partial<CalendarEntry>, loadedUpdatedAt?: string | null): Promise<SaveResult> => {
+      if (!partial.date_key) return Promise.resolve({ conflict: false });
+      const dateKey = partial.date_key;
+
+      const prev = pendingWritesRef.current.get(dateKey) ?? Promise.resolve({ conflict: false });
+      const next = prev.then(
+        () => doSave(partial, loadedUpdatedAt),
+        () => doSave(partial, loadedUpdatedAt)
+      );
+      pendingWritesRef.current.set(dateKey, next);
+      return next.finally(() => {
+        if (pendingWritesRef.current.get(dateKey) === next) pendingWritesRef.current.delete(dateKey);
+      });
+    },
+    [doSave]
   );
 
   const markWatched = useCallback(

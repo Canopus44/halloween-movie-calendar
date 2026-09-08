@@ -7,6 +7,8 @@ import { personaConfig } from '../config';
 interface DayDetailModalProps {
   open: boolean;
   day: number;
+  /** date_key of the opened day — scopes pending/last-saved notes per day. */
+  dateKey: string;
   entry?: CalendarEntry;
   persona: Persona | null;
   onClose: () => void;
@@ -35,6 +37,7 @@ function storedPersonaLabel(id: string | null | undefined): string | null {
 export default function DayDetailModal({
   open,
   day,
+  dateKey,
   entry,
   persona,
   onClose,
@@ -53,52 +56,30 @@ export default function DayDetailModal({
   // baseline and handlers, never a stale closure from the scheduling render.
   const onSetNotesRef = useRef(onSetNotes);
   onSetNotesRef.current = onSetNotes;
+  const openRef = useRef(open);
+  openRef.current = open;
+  const dateKeyRef = useRef(dateKey);
+  dateKeyRef.current = dateKey;
+  const entryRef = useRef(entry);
+  entryRef.current = entry;
+
   const notesDraftRef = useRef<Record<PersonaKey, string>>({ p1: '', p2: '' });
   const flushTimerRef = useRef<Record<PersonaKey, ReturnType<typeof setTimeout> | null>>({
     p1: null,
     p2: null,
   });
-  // Texts whose last flush was rejected by the conflict guard — resent once the
-  // parent resolves the conflict and clears the message.
-  const conflictPendingRef = useRef<Partial<Record<PersonaKey, string>>>({});
+  // Text currently being sent for each persona (null when idle). Used to drop
+  // duplicate invocations of the same text; a NEWER draft passes through and is
+  // serialized by useCalendar's per-date_key write queue.
+  const notesSendingRef = useRef<Record<PersonaKey, string | null>>({ p1: null, p2: null });
+  // Last confirmed server value per date_key/persona. A blur/close that did not
+  // change a draft must not trigger a write (no server call, no updated_by churn).
+  const lastSavedNotesRef = useRef<Map<string, Partial<Record<PersonaKey, string>>>>(new Map());
+  // Texts rejected by the conflict guard per date_key/persona. They survive a
+  // close + reopen so unsaved notes are never silently dropped.
+  const pendingNotesRef = useRef<Map<string, Partial<Record<PersonaKey, string>>>>(new Map());
   const prevOpenRef = useRef(false);
   const prevConflictRef = useRef<string | null | undefined>(null);
-
-  const handleClose = useCallback(() => {
-    // Flush any pending debounced notes before the day closes, so the trailing
-    // edit is not lost.
-    if (flushTimerRef.current.p1) {
-      const t = flushTimerRef.current.p1;
-      flushTimerRef.current.p1 = null;
-      clearTimeout(t);
-      onSetNotesRef.current('p1', notesDraftRef.current.p1);
-    }
-    if (flushTimerRef.current.p2) {
-      const t = flushTimerRef.current.p2;
-      flushTimerRef.current.p2 = null;
-      clearTimeout(t);
-      onSetNotesRef.current('p2', notesDraftRef.current.p2);
-    }
-    onClose();
-  }, [onClose]);
-
-  const panelRef = useModalA11y(open, handleClose, 'textarea.notes-input, .detail-empty .btn-primary');
-
-  // Initialize local note drafts when the modal opens (and only then, so
-  // realtime updates while typing do not clobber the draft).
-  useEffect(() => {
-    if (open && !prevOpenRef.current) {
-      const p1 = entry?.notes_p1 || '';
-      const p2 = entry?.notes_p2 || '';
-      notesDraftRef.current = { p1, p2 };
-      setNotesP1(p1);
-      setNotesP2(p2);
-      conflictPendingRef.current = {};
-      prevConflictRef.current = saveConflict ?? null;
-    }
-    prevOpenRef.current = open;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   const clearTimer = useCallback((p: PersonaKey) => {
     if (flushTimerRef.current[p]) {
@@ -107,30 +88,55 @@ export default function DayDetailModal({
     }
   }, []);
 
-  const flushNotes = useCallback(
-    async (p: PersonaKey) => {
+  /** Single funnel for every notes write (debounce fire, blur, close, movie
+   *  switch, conflict-resend). Skips when the draft still equals the last
+   *  confirmed server value or the text is already being sent; a genuinely new
+   *  draft passes through and is ordered by useCalendar's per-date_key queue. */
+  const flushPersona = useCallback(
+    async (p: PersonaKey): Promise<boolean> => {
+      // Defensive: no legitimate flush should fire while the modal is closed.
+      if (!openRef.current) return true;
       clearTimer(p);
+      const dayKey = dateKeyRef.current;
       const text = notesDraftRef.current[p];
-      const ok = await onSetNotesRef.current(p, text);
-      if (ok === false) conflictPendingRef.current[p] = text;
+      const saved = lastSavedNotesRef.current.get(dayKey)?.[p];
+      if (text === saved) return true; // no edit since the last confirmed save
+      if (notesSendingRef.current[p] === text) return true; // already sending it
+      notesSendingRef.current[p] = text;
+      try {
+        const ok = await onSetNotesRef.current(p, text);
+        if (ok === false) {
+          // Conflict guard rejected the write: keep the text pending so a later
+          // explicit resolve (or a reopen of the same day) can resend it.
+          const pending = pendingNotesRef.current.get(dayKey) ?? {};
+          pending[p] = text;
+          pendingNotesRef.current.set(dayKey, pending);
+          return false;
+        }
+        const savedBase = lastSavedNotesRef.current.get(dayKey) ?? {};
+        savedBase[p] = text;
+        lastSavedNotesRef.current.set(dayKey, savedBase);
+        const pending = pendingNotesRef.current.get(dayKey);
+        if (pending) {
+          delete pending[p];
+          if (Object.keys(pending).length === 0) pendingNotesRef.current.delete(dayKey);
+        }
+        return true;
+      } finally {
+        // Only clear when this is still the newest text being sent — a newer
+        // flush may have taken over while this request was in flight.
+        if (notesSendingRef.current[p] === text) notesSendingRef.current[p] = null;
+      }
     },
     [clearTimer]
-  );
-
-  const flushNotesNow = useCallback(
-    (p: PersonaKey) => {
-      clearTimer(p);
-      flushNotes(p);
-    },
-    [clearTimer, flushNotes]
   );
 
   const scheduleNotesFlush = useCallback(
     (p: PersonaKey) => {
       clearTimer(p);
-      flushTimerRef.current[p] = setTimeout(() => flushNotes(p), NOTES_FLUSH_DELAY);
+      flushTimerRef.current[p] = setTimeout(() => void flushPersona(p), NOTES_FLUSH_DELAY);
     },
-    [clearTimer, flushNotes]
+    [clearTimer, flushPersona]
   );
 
   const handleNotesChange = useCallback(
@@ -143,18 +149,71 @@ export default function DayDetailModal({
     [scheduleNotesFlush]
   );
 
-  // After the parent resolves a conflict (message cleared), resend the notes
-  // that were rejected so the user does not have to retype them.
+  const flushBoth = useCallback(() => {
+    void flushPersona('p1');
+    void flushPersona('p2');
+  }, [flushPersona]);
+
+  const handleClose = useCallback(() => {
+    // Flush any pending debounced notes before the day closes so the trailing
+    // edit is not lost. Routes through flushPersona so a conflict-rejected text
+    // is recorded as pending and survives a reopen.
+    flushBoth();
+    onClose();
+  }, [flushBoth, onClose]);
+
+  /** Change-movie closes this modal without going through handleClose: flush
+   *  pending notes first so the parent cannot clear the conflict message and
+   *  drop them. */
+  const handleChangeMovie = useCallback(() => {
+    flushBoth();
+    onChangeMovie();
+  }, [flushBoth, onChangeMovie]);
+
+  const panelRef = useModalA11y(open, handleClose, 'textarea.notes-input, .detail-empty .btn-primary');
+
+  // Open-session init: seed the drafts from the last confirmed entry, EXCEPT
+  // when the same day still holds unsaved pending text from an earlier rejected
+  // write — that text must survive a reopen so the user does not retype it.
+  useEffect(() => {
+    if (!open) {
+      prevOpenRef.current = false;
+      clearTimer('p1');
+      clearTimer('p2');
+      return;
+    }
+    if (prevOpenRef.current) return; // realtime updates while open must not clobber drafts
+    prevOpenRef.current = true;
+
+    const pending = pendingNotesRef.current.get(dateKey);
+    const current = entryRef.current;
+    const p1 = pending?.p1 !== undefined ? pending.p1 : (current?.notes_p1 ?? '');
+    const p2 = pending?.p2 !== undefined ? pending.p2 : (current?.notes_p2 ?? '');
+    notesDraftRef.current = { p1, p2 };
+    setNotesP1(p1);
+    setNotesP2(p2);
+    // The freshly shown values are the server baseline for the personas that
+    // have no pending text; blurring an untouched field must not rewrite them.
+    const savedBase = lastSavedNotesRef.current.get(dateKey) ?? {};
+    if (pending?.p1 === undefined) savedBase.p1 = p1;
+    if (pending?.p2 === undefined) savedBase.p2 = p2;
+    lastSavedNotesRef.current.set(dateKey, savedBase);
+    prevConflictRef.current = saveConflict ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, dateKey]);
+
+  // After the parent resolves a conflict (message cleared while this day is
+  // still open), resend the notes the guard had rejected. Guarded on `open` so
+  // clearing the message while the modal is closed cannot fire into the wrong
+  // context or drop pending text.
   useEffect(() => {
     const wasConflict = prevConflictRef.current;
     prevConflictRef.current = saveConflict ?? null;
+    if (!open) return;
     if (wasConflict && !saveConflict) {
-      const pending = conflictPendingRef.current;
-      conflictPendingRef.current = {};
-      if (pending.p1 !== undefined) onSetNotesRef.current('p1', pending.p1);
-      if (pending.p2 !== undefined) onSetNotesRef.current('p2', pending.p2);
+      flushBoth();
     }
-  }, [saveConflict]);
+  }, [saveConflict, open, flushBoth]);
 
   if (!open) return null;
 
@@ -204,7 +263,7 @@ export default function DayDetailModal({
         {!entry?.movie_id ? (
           <div className="detail-empty">
             <p className="detail-empty-text">Sin película seleccionada todavía.</p>
-            <button className="btn btn-primary" onClick={onChangeMovie}>🎬 Elegir película</button>
+            <button className="btn btn-primary" onClick={handleChangeMovie}>🎬 Elegir película</button>
           </div>
         ) : (
           <>
@@ -226,7 +285,7 @@ export default function DayDetailModal({
                   >
                     {entry.watched ? 'Desmarcar como vista' : '✓ Marcar como vista'}
                   </button>
-                  <button className="btn btn-ghost" onClick={onChangeMovie}>
+                  <button className="btn btn-ghost" onClick={handleChangeMovie}>
                     Cambiar película
                   </button>
                 </div>
@@ -242,7 +301,7 @@ export default function DayDetailModal({
                   placeholder={`Notas de ${personaConfig('p1').name}…`}
                   value={notesP1}
                   onChange={(e) => handleNotesChange('p1', e.target.value)}
-                  onBlur={() => flushNotesNow('p1')}
+                  onBlur={() => void flushPersona('p1')}
                   rows={2}
                   aria-label={`Notas de ${personaConfig('p1').name}`}
                 />
@@ -255,7 +314,7 @@ export default function DayDetailModal({
                   placeholder={`Notas de ${personaConfig('p2').name}…`}
                   value={notesP2}
                   onChange={(e) => handleNotesChange('p2', e.target.value)}
-                  onBlur={() => flushNotesNow('p2')}
+                  onBlur={() => void flushPersona('p2')}
                   rows={2}
                   aria-label={`Notas de ${personaConfig('p2').name}`}
                 />

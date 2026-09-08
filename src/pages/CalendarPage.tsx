@@ -207,6 +207,7 @@ export default function CalendarPage() {
       <DayDetailModal
         open={detailDay != null}
         day={detailDay ?? 1}
+        dateKey={detailDateKey}
         entry={detailEntry}
         persona={persona}
         stale={stale}
